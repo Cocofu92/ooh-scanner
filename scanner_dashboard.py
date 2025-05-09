@@ -178,7 +178,9 @@ async def main_async():
 
 # Run and display
 with st.spinner("Running scan... this may take 1–2 minutes"):
+    st.write("🔍 Starting async fetch...")
     df = asyncio.run(main_async())
+    st.write("✅ Async fetch complete.")
 
 now = datetime.now()
 
@@ -197,6 +199,7 @@ if "last_refresh" not in st.session_state:
 
 elapsed = (now - st.session_state.last_refresh).total_seconds()
 
-if elapsed > REFRESH_MINUTES * 60:
-    st.session_state.last_refresh = now
-    st.experimental_rerun()
+# TEMPORARILY DISABLED for debugging:
+# if elapsed > REFRESH_MINUTES * 60:
+#     st.session_state.last_refresh = now
+#     st.experimental_rerun()
