@@ -23,7 +23,6 @@ YESTERDAY = (datetime.today() - timedelta(days=1)).strftime('%Y-%m-%d')
 TWO_DAYS_AGO = (datetime.today() - timedelta(days=2)).strftime('%Y-%m-%d')
 START_DATE = (datetime.today() - timedelta(days=30)).strftime('%Y-%m-%d')
 
-@st.cache_data(ttl=REFRESH_MINUTES * 60)
 async def fetch(_session, url):
     try:
         async with _session.get(url, timeout=10) as response:
