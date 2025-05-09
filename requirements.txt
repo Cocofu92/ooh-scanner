@@ -1,4 +1,4 @@
 streamlit>=1.18
 aiohttp
-pandas
 nest_asyncio
+pandas
