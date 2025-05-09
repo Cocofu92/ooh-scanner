@@ -180,8 +180,23 @@ async def main_async():
 with st.spinner("Running scan... this may take 1–2 minutes"):
     df = asyncio.run(main_async())
 
+now = datetime.now()
+
 if not df.empty:
     st.success(f"✅ Found {len(df)} qualifying stocks")
     st.dataframe(df, use_container_width=True)
 else:
     st.warning("⚠️ No qualifying stocks met the criteria today.")
+
+# Show timestamp
+st.caption(f"Last updated: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+
+# Auto-refresh using session state
+if "last_refresh" not in st.session_state:
+    st.session_state.last_refresh = now
+
+elapsed = (now - st.session_state.last_refresh).total_seconds()
+
+if elapsed > REFRESH_MINUTES * 60:
+    st.session_state.last_refresh = now
+    st.experimental_rerun()
