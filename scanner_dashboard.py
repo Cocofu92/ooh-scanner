@@ -6,7 +6,8 @@ from datetime import datetime, timedelta
 
 nest_asyncio.apply()
 
-API_KEY = "cXcAYHG065BCC9xr6iTMMyhFlhZ2M7Uh"
+import streamlit as st
+API_KEY = st.secrets["API_KEY"]
 OORVOL_THRESHOLD = 1.2  # Show all OORVOLs for now
 MIN_PRICE = 2
 MIN_AVG_VOLUME = 1_000_000
