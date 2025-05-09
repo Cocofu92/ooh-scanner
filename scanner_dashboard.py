@@ -17,19 +17,17 @@ st.set_page_config(page_title="OOH Volume Scanner", layout="wide")
 st.title("📊 Out-of-Hours Volume & Price Breakout Scanner")
 st.caption(f"Last updated: {datetime.now():%Y-%m-%d %H:%M:%S}")
 
-# ─── 1) Bulk snapshot of today’s volume (only tickers ≥ MIN_AVG_VOLUME) ───
+# ─── 1) Bulk snapshot of today’s volume ───
 @st.cache_data(ttl=300)
 def get_volume_snapshot():
     url = (
         "https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers"
         f"?apiKey={API_KEY}"
     )
-    resp = requests.get(url, timeout=15)
-    data = resp.json()  # now valid JSON
-    # build { ticker: today_vol } for those above threshold
+    data = requests.get(url, timeout=15).json().get("tickers", [])
     return {
         t["ticker"]: t["day"]["v"]
-        for t in data.get("tickers", [])
+        for t in data
         if t.get("day", {}).get("v", 0) >= MIN_AVG_VOLUME
     }
 
@@ -47,7 +45,7 @@ def get_metadata():
         if r["c"] >= MIN_PRICE
     }
 
-# ─── 3) Scan post- & pre-market bars and apply filters ───
+# ─── 3) Scan OOH minute bars and apply filters ───
 def scan_ooh(vol_map, meta_map):
     rows = []
     for ticker, today_vol in vol_map.items():
@@ -55,13 +53,12 @@ def scan_ooh(vol_map, meta_map):
         if prev_close is None:
             continue
 
-        # post-market (yesterday)
+        # Fetch post-market (yesterday) and pre-market (today) minute bars
         url_y = (
             f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/minute/"
             f"{YESTERDAY}/{YESTERDAY}"
             f"?adjusted=true&sort=asc&limit=10000&apiKey={API_KEY}"
         )
-        # pre-market (today)
         url_t = (
             f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/minute/"
             f"{TODAY}/{TODAY}"
@@ -81,7 +78,7 @@ def scan_ooh(vol_map, meta_map):
                 post_prices.append(bar["c"])
         for bar in dt:
             tm = datetime.fromtimestamp(bar["t"]/1000)
-            if tm.hour < 9 or (tm.hour==9 and tm.minute<30):
+            if tm.hour < 9 or (tm.hour == 9 and tm.minute < 30):
                 pre_vol += bar["v"]
                 pre_prices.append(bar["c"])
 
@@ -94,15 +91,19 @@ def scan_ooh(vol_map, meta_map):
 
         if oorvol > OORVOL_THRESH and ooh_pct > OOH_PCT_THRESH:
             rows.append({
-                "Ticker":       ticker,
-                "Today's Vol":  int(today_vol),
-                "OOH Volume":   int(total_ooh),
-                "OORVOL":       round(oorvol, 2),
-                "OOH % Change": round(ooh_pct, 2),
-                "Prev Close":   round(prev_close, 2),
+                "Ticker":        ticker,
+                "Today's Vol":   int(today_vol),
+                "OOH Volume":    int(total_ooh),
+                "OORVOL":        round(oorvol, 2),
+                "OOH % Change":  round(ooh_pct, 2),
+                "Prev Close":    round(prev_close, 2),
             })
 
-    return pd.DataFrame(rows).sort_values("OORVOL", ascending=False)
+    # Build DataFrame and only sort if column exists
+    df = pd.DataFrame(rows)
+    if "OORVOL" in df.columns:
+        df = df.sort_values("OORVOL", ascending=False)
+    return df
 
 # ─── MAIN ───
 with st.spinner("Running scan… this may take 30–60 seconds"):
