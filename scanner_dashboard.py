@@ -116,7 +116,7 @@ async def fetch_ooh_volume(session, ticker):
 async def main_async():
     async with aiohttp.ClientSession() as session:
         metadata_map = await get_grouped_data_with_metadata(session)
-        tickers = ["AAPL", "TSLA", "NVDA", "AMD", "GOOG"]  # Debug: limit to known symbols
+        tickers = list(metadata_map.keys())
 
         tasks_volume = [fetch_21d_avg_volume(session, t) for t in tickers]
         volume_results = await asyncio.gather(*tasks_volume)
@@ -178,11 +178,7 @@ async def main_async():
 
 # Run and display
 with st.spinner("Running scan... this may take 1–2 minutes"):
-    st.write("🔍 Starting async fetch...")
     df = asyncio.run(main_async())
-    st.write("✅ Async fetch complete.")
-
-now = datetime.now()
 
 if not df.empty:
     st.success(f"✅ Found {len(df)} qualifying stocks")
@@ -190,7 +186,5 @@ if not df.empty:
 else:
     st.warning("⚠️ No qualifying stocks met the criteria today.")
 
-# Show timestamp
-st.caption(f"Last updated: {now.strftime('%Y-%m-%d %H:%M:%S')}")
-
-# Auto-refresh temporarily disabled for debugging
+# Show last updated time
+st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
