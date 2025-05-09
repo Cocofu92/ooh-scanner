@@ -172,4 +172,6 @@ async def main_async():
         else:
             print("⚠️ No qualifying stocks. Check filters or run at a different time.")
 
-await main_async()
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main_async())
