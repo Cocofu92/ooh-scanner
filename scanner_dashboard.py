@@ -5,7 +5,6 @@ import asyncio
 import pandas as pd
 import nest_asyncio
 from datetime import datetime, timedelta
-from IPython.display import display  # for Colab
 
 nest_asyncio.apply()
 
