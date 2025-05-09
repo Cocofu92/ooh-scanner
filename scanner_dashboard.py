@@ -1,36 +1,42 @@
+import streamlit as st
 import aiohttp
 import asyncio
 import pandas as pd
-import nest_asyncio
 from datetime import datetime, timedelta
+import nest_asyncio
 
 nest_asyncio.apply()
 
-import streamlit as st
 API_KEY = st.secrets["API_KEY"]
-OORVOL_THRESHOLD = 1.2  # Show all OORVOLs for now
-MIN_PRICE = 2
-MIN_AVG_VOLUME = 1_000_000
-OOH_PRICE_THRESHOLD = 2  # % change vs yesterday's close
+
+st.set_page_config(page_title="OOH Volume Scanner", layout="wide")
+st.title("📊 Out-of-Hours Volume & Price Breakout Scanner")
+
+OORVOL_THRESHOLD = st.sidebar.slider("Min OORVOL", 0.0, 5.0, 1.2, 0.1)
+MIN_AVG_VOLUME = st.sidebar.number_input("Min 21-Day Avg Volume", value=1_000_000)
+MIN_PRICE = st.sidebar.number_input("Min Price ($)", value=2.0)
+OOH_PRICE_THRESHOLD = st.sidebar.slider("OOH Price Change vs Close (%)", 0, 20, 2)
+REFRESH_MINUTES = st.sidebar.slider("Refresh every X minutes", 1, 60, 5)
 
 TODAY = datetime.today().strftime('%Y-%m-%d')
 YESTERDAY = (datetime.today() - timedelta(days=1)).strftime('%Y-%m-%d')
 TWO_DAYS_AGO = (datetime.today() - timedelta(days=2)).strftime('%Y-%m-%d')
 START_DATE = (datetime.today() - timedelta(days=30)).strftime('%Y-%m-%d')
 
+@st.cache_data(ttl=REFRESH_MINUTES * 60)
 async def fetch(session, url):
     try:
         async with session.get(url, timeout=10) as response:
             return await response.json()
     except Exception as e:
-        print(f"Request error: {e}")
+        st.error(f"Request error: {e}")
         return {}
 
 async def get_grouped_data_with_metadata(session):
-    group_url = f"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/{YESTERDAY}?adjusted=true&apiKey={API_KEY}"
+    today_url = f"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/{YESTERDAY}?adjusted=true&apiKey={API_KEY}"
     prev_url = f"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/{TWO_DAYS_AGO}?adjusted=true&apiKey={API_KEY}"
 
-    today_data = await fetch(session, group_url)
+    today_data = await fetch(session, today_url)
     prev_data = await fetch(session, prev_url)
 
     today_results = {item["T"]: item["c"] for item in today_data.get("results", [])}
@@ -101,16 +107,13 @@ async def fetch_ooh_volume(session, ticker):
 
 async def main_async():
     async with aiohttp.ClientSession() as session:
-        print("🔄 Fetching grouped data...")
         metadata_map = await get_grouped_data_with_metadata(session)
         tickers = list(metadata_map.keys())
 
-        print(f"🔎 Checking {len(tickers)} tickers for avg volume...")
         tasks_volume = [fetch_21d_avg_volume(session, t) for t in tickers]
         volume_results = await asyncio.gather(*tasks_volume)
         volume_map = {t: v for result in volume_results if result is not None for t, v in [result]}
 
-        print(f"📉 {len(volume_map)} tickers passed volume filter. Checking OOH volume...")
         tasks_ooh = [fetch_ooh_volume(session, t) for t in volume_map]
         ooh_results = await asyncio.gather(*tasks_ooh)
         ooh_map = {
@@ -126,7 +129,6 @@ async def main_async():
             for t, vol, pre_start, pre_end, post_start, post_end, pre_price, post_price in ooh_results
         }
 
-        print("✅ Calculating OORVOL and applying filters...")
         results = []
         for ticker, avg_vol in volume_map.items():
             ooh_data = ooh_map.get(ticker, {})
@@ -163,13 +165,15 @@ async def main_async():
             })
 
         df = pd.DataFrame(results)
-        if not df.empty:
-            df.sort_values("OORVOL", ascending=False, inplace=True)
-            df.to_csv("oorvol_scan_results.csv", index=False)
-            print(f"📁 Results saved to 'oorvol_scan_results.csv'")
-            print(f"✅ Found {len(df)} qualifying stocks.")
-            display(df)
-        else:
-            print("⚠️ No qualifying stocks. Check filters or run at a different time.")
+        df.sort_values("OORVOL", ascending=False, inplace=True)
+        return df
 
-await main_async()
+# Run and display
+with st.spinner("Running scan... this may take 1–2 minutes"):
+    df = asyncio.run(main_async())
+
+if not df.empty:
+    st.success(f"✅ Found {len(df)} qualifying stocks")
+    st.dataframe(df, use_container_width=True)
+else:
+    st.warning("⚠️ No qualifying stocks met the criteria today.")
