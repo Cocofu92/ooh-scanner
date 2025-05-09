@@ -3,110 +3,107 @@ import requests
 import pandas as pd
 from datetime import datetime, timedelta
 
-# ——— CONFIG ———
-API_KEY       = st.secrets["API_KEY"]    # ← Put your Polygon key in Secrets
-OORVOL_THRESH = 1.2
-MIN_AVG_VOL   = 1_000_000
-MIN_PRICE     = 2.0
+# ─── CONFIG ───
+API_KEY        = st.secrets["API_KEY"]
+OORVOL_THRESH  = 1.2
+MIN_AVG_VOLUME = 1_000_000  # here using today’s volume as a proxy
+MIN_PRICE      = 2.0
+OOH_PCT_THRESH = 2.0        # % price change
 
-# Dates
-TODAY      = datetime.today().strftime("%Y-%m-%d")
-YESTERDAY  = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
-TWO_DAYS   = (datetime.today() - timedelta(days=2)).strftime("%Y-%m-%d")
-START_DATE = (datetime.today() - timedelta(days=30)).strftime("%Y-%m-%d")
+# Date strings
+TODAY     = datetime.today().strftime("%Y-%m-%d")
+YESTERDAY = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
 
-# Page
+# ─── PAGE SETUP ───
 st.set_page_config(page_title="OOH Volume Scanner", layout="wide")
 st.title("📊 Out-of-Hours Volume & Price Breakout Scanner")
 st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-# ——— STEP 1: Fetch yesterday vs two‐days‐ago closes ———
+# ─── 1) Fetch bulk snapshot of today’s volumes ───
+@st.cache_data(ttl=300)
+def get_volume_snapshot():
+    url = (
+        "https://api.polygon.io/v2/snapshot/locale/us/markets/stocks"
+        f"?apiKey={API_KEY}"
+    )
+    data = requests.get(url, timeout=15).json().get("tickers", [])
+    # build { ticker: volume } only for tickers above threshold
+    return {
+        t["ticker"]: t["day"]["v"]
+        for t in data
+        if t.get("day", {}).get("v", 0) >= MIN_AVG_VOLUME
+    }
+
+# ─── 2) Fetch grouped metadata (yesterday close) ───
 @st.cache_data(ttl=3600)
 def get_metadata():
-    url_y = f"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/{YESTERDAY}?adjusted=true&apiKey={API_KEY}"
-    url_2 = f"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/{TWO_DAYS}?adjusted=true&apiKey={API_KEY}"
-    today = requests.get(url_y, timeout=10).json().get("results", [])
-    prev  = requests.get(url_2, timeout=10).json().get("results", [])
-    prev_map = {r["T"]: r["c"] for r in prev}
-    md = {}
-    for r in today:
-        t, close = r["T"], r["c"]
-        p = prev_map.get(t)
-        if p and close >= MIN_PRICE:
-            pct = (close - p) / p * 100
-            md[t] = {"prev_close": round(p,2), "pct_change": round(pct,2)}
-    return md
+    url = (
+        f"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/"
+        f"{YESTERDAY}?adjusted=true&apiKey={API_KEY}"
+    )
+    res = requests.get(url, timeout=15).json().get("results", [])
+    return { r["T"]: r["c"] for r in res if r["c"] >= MIN_PRICE }
 
-# ——— STEP 2: Filter by 21-day average volume ———
-@st.cache_data(ttl=3600)
-def get_avg_volumes(tickers):
-    vm = {}
-    for t in tickers:
-        url = (
-            f"https://api.polygon.io/v2/aggs/ticker/{t}/range/1/day/"
-            f"{START_DATE}/{YESTERDAY}"
-            f"?adjusted=true&sort=desc&limit=30&apiKey={API_KEY}"
-        )
-        res = requests.get(url, timeout=10).json().get("results", [])
-        vols = [d["v"] for d in res][-21:]
-        if len(vols)==21:
-            avg = sum(vols)/21
-            if avg >= MIN_AVG_VOL:
-                vm[t] = avg
-    return vm
-
-# ——— STEP 3: Fetch OOH minute data and apply filters ———
-def scan_ooh(vm, md):
+# ─── 3) Scan OOH minute bars and apply filters ───
+def scan_ooh(vol_map, meta_map):
     rows = []
-    for t, avg in vm.items():
-        # minute bars for post-market (yesterday) & pre-market (today)
+    for ticker, avg_vol in vol_map.items():
+        prev_close = meta_map.get(ticker)
+        if not prev_close:
+            continue
+
+        # fetch yesterday’s post-market minutes
         url_y = (
-            f"https://api.polygon.io/v2/aggs/ticker/{t}/range/1/minute/"
+            f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/minute/"
             f"{YESTERDAY}/{YESTERDAY}"
             f"?adjusted=true&sort=asc&limit=10000&apiKey={API_KEY}"
         )
+        # fetch today’s pre-market minutes
         url_t = (
-            f"https://api.polygon.io/v2/aggs/ticker/{t}/range/1/minute/"
+            f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/minute/"
             f"{TODAY}/{TODAY}"
             f"?adjusted=true&sort=asc&limit=10000&apiKey={API_KEY}"
         )
-        dy = requests.get(url_y, timeout=10).json().get("results", [])
-        dt = requests.get(url_t, timeout=10).json().get("results", [])
+        dyn = requests.get(url_y, timeout=10).json().get("results", [])
+        dtn = requests.get(url_t, timeout=10).json().get("results", [])
 
-        post_v = pre_v = 0
+        post_vol = pre_vol = 0
         pre_prices = []; post_prices = []
-        for c in dy:
-            tm = datetime.fromtimestamp(c["t"]/1000)
-            if tm.hour>=16:
-                post_v += c["v"]; post_prices.append(c["c"])
-        for c in dt:
-            tm = datetime.fromtimestamp(c["t"]/1000)
-            if tm.hour<9 or (tm.hour==9 and tm.minute<30):
-                pre_v += c["v"]; pre_prices.append(c["c"])
+        for bar in dyn:
+            dtm = datetime.fromtimestamp(bar["t"] / 1000)
+            if dtm.hour >= 16:
+                post_vol += bar["v"]
+                post_prices.append(bar["c"])
+        for bar in dtn:
+            dtm = datetime.fromtimestamp(bar["t"] / 1000)
+            if dtm.hour < 9 or (dtm.hour == 9 and dtm.minute < 30):
+                pre_vol += bar["v"]
+                pre_prices.append(bar["c"])
 
         if not pre_prices or not post_prices:
             continue
 
-        oorvol = (pre_v+post_v)/avg
-        ooh_pct = (pre_prices[-1] - md[t]["prev_close"]) / md[t]["prev_close"] * 100
+        total_ooh = pre_vol + post_vol
+        oorvol    = total_ooh / avg_vol
+        ooh_pct   = (pre_prices[-1] - prev_close) / prev_close * 100
 
-        if oorvol > OORVOL_THRESH and ooh_pct > 2:
+        if oorvol > OORVOL_THRESH and ooh_pct > OOH_PCT_THRESH:
             rows.append({
-                "Ticker":         t,
-                "21D Avg Volume": int(avg),
-                "OOH Volume":     int(pre_v+post_v),
-                "OORVOL":         round(oorvol,2),
-                "OOH % Change":   round(ooh_pct,2),
-                "Last Close":     md[t]["prev_close"],
-                "Daily % Change": md[t]["pct_change"],
+                "Ticker":          ticker,
+                "Today's Vol":     int(avg_vol),
+                "OOH Volume":      int(total_ooh),
+                "OORVOL":          round(oorvol, 2),
+                "OOH % Change":    round(ooh_pct, 2),
+                "Prev Close":      round(prev_close, 2),
             })
+
     return pd.DataFrame(rows).sort_values("OORVOL", ascending=False)
 
-# ——— RUN & DISPLAY ———
-with st.spinner("Running scan… this may take ~1‒2 minutes"):
-    metadata = get_metadata()
-    avg_vols = get_avg_volumes(list(metadata.keys()))
-    df       = scan_ooh(avg_vols, metadata)
+# ─── MAIN ───
+with st.spinner("Running scan… this may take 30–60 seconds"):
+    volume_map = get_volume_snapshot()
+    meta_map   = get_metadata()
+    df         = scan_ooh(volume_map, meta_map)
 
 if not df.empty:
     st.success(f"✅ Found {len(df)} qualifying stocks")
