@@ -7,135 +7,154 @@ import nest_asyncio
 
 nest_asyncio.apply()
 
-# Your Polygon API key is stored in Streamlit secrets
-API_KEY = st.secrets["API_KEY"]
+# ——— CONFIG ———
+API_KEY = st.secrets["API_KEY"]         # Make sure you’ve set this in Streamlit Cloud secrets
+OORVOL_THRESHOLD = 1.2
+MIN_AVG_VOLUME = 1_000_000
+MIN_PRICE = 2.0
+
+TODAY = datetime.today().strftime("%Y-%m-%d")
+YESTERDAY = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+TWO_DAYS_AGO = (datetime.today() - timedelta(days=2)).strftime("%Y-%m-%d")
+START_DATE = (datetime.today() - timedelta(days=30)).strftime("%Y-%m-%d")
 
 st.set_page_config(page_title="OOH Volume Scanner", layout="wide")
 st.title("📊 Out-of-Hours Volume & Price Breakout Scanner")
 
-# Sidebar filters
-OORVOL_THRESHOLD = st.sidebar.slider("Min OORVOL", 0.0, 5.0, 1.2, 0.1)
-MIN_AVG_VOLUME = st.sidebar.number_input("Min 21-Day Avg Volume", value=1_000_000)
-MIN_PRICE = st.sidebar.number_input("Min Price ($)", value=2.0)
-OOH_PRICE_THRESHOLD = st.sidebar.slider("OOH Price Change vs Close (%)", 0, 20, 2)
-
-# Date variables
-today = datetime.today().strftime('%Y-%m-%d')
-yesterday = (datetime.today() - timedelta(days=1)).strftime('%Y-%m-%d')
-two_days_ago = (datetime.today() - timedelta(days=2)).strftime('%Y-%m-%d')
-start_date = (datetime.today() - timedelta(days=30)).strftime('%Y-%m-%d')
-
+# ——— HELPER FUNCTIONS ———
 async def fetch(session, url):
-    """
-    Fetch JSON data from the given URL using aiohttp.
-    Returns an empty dict on error.
-    """
     try:
         async with session.get(url, timeout=10) as resp:
             return await resp.json()
     except Exception as e:
-        st.error(f"Error fetching {url}: {e}")
+        st.error(f"Fetch error: {e}")
         return {}
 
 async def get_grouped_data_with_metadata(session):
-    # Use yesterday for metadata grouping
-    url_today = f"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/{yesterday}?adjusted=true&apiKey={API_KEY}"
-    url_prev = f"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/{two_days_ago}?adjusted=true&apiKey={API_KEY}"
+    url_today = (
+        f"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/"
+        f"{YESTERDAY}?adjusted=true&apiKey={API_KEY}"
+    )
+    url_prev = (
+        f"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/"
+        f"{TWO_DAYS_AGO}?adjusted=true&apiKey={API_KEY}"
+    )
+    today_data = await fetch(session, url_today)
+    prev_data = await fetch(session, url_prev)
 
-    data_today = await fetch(session, url_today)
-    data_prev = await fetch(session, url_prev)
+    today_map = {r["T"]: r["c"] for r in today_data.get("results", [])}
+    prev_map = {r["T"]: r["c"] for r in prev_data.get("results", [])}
 
-    # Map ticker -> close price
-    today_closes = {item['T']: item['c'] for item in data_today.get('results', [])}
-    prev_closes = {item['T']: item['c'] for item in data_prev.get('results', [])}
-
-    metadata = {}
-    for ticker, close in today_closes.items():
-        if close >= MIN_PRICE and ticker in prev_closes:
-            prev = prev_closes[ticker]
-            if prev:
-                pct_change = (close - prev) / prev * 100
-                metadata[ticker] = {
-                    'close': round(close,2),
-                    'pct_change': round(pct_change,2),
-                    'prev_close': round(prev,2)
-                }
-    return metadata
+    md = {}
+    for ticker, close in today_map.items():
+        prev_close = prev_map.get(ticker)
+        if prev_close and close >= MIN_PRICE:
+            pct = ((close - prev_close) / prev_close) * 100
+            md[ticker] = {
+                "close": round(close, 2),
+                "pct_change": round(pct, 2),
+                "prev_close": round(prev_close, 2),
+            }
+    return md
 
 async def fetch_21d_avg_volume(session, ticker):
-    url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start_date}/{yesterday}?adjusted=true&sort=desc&limit=30&apiKey={API_KEY}"
+    url = (
+        f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/"
+        f"{START_DATE}/{YESTERDAY}?adjusted=true&sort=desc&limit=30&apiKey={API_KEY}"
+    )
     data = await fetch(session, url)
-    vols = [d['v'] for d in data.get('results', [])][-21:]
+    vols = [d["v"] for d in data.get("results", [])][-21:]
     if len(vols) >= 21:
-        avg = sum(vols)/21
+        avg = sum(vols) / 21
         if avg >= MIN_AVG_VOLUME:
             return ticker, avg
     return None
 
 async def fetch_ooh_volume(session, ticker):
-    url_post = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/minute/{yesterday}/{yesterday}?adjusted=true&sort=asc&limit=10000&apiKey={API_KEY}"
-    url_pre = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/minute/{today}/{today}?adjusted=true&sort=asc&limit=10000&apiKey={API_KEY}"
+    url_y = (
+        f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/minute/"
+        f"{YESTERDAY}/{YESTERDAY}?adjusted=true&sort=asc&limit=10000&apiKey={API_KEY}"
+    )
+    url_t = (
+        f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/minute/"
+        f"{TODAY}/{TODAY}?adjusted=true&sort=asc&limit=10000&apiKey={API_KEY}"
+    )
+    dy = await fetch(session, url_y)
+    dt = await fetch(session, url_t)
 
-    data_post = await fetch(session, url_post)
-    data_pre = await fetch(session, url_pre)
-
-    post_vol = 0
-    post_prices = []
-    pre_vol = 0
+    post_v = pre_v = 0
     pre_prices = []
+    post_prices = []
+    pre_times = []
+    post_times = []
 
-    # After-hours yesterday
-    for bar in data_post.get('results', []):
-        t = datetime.fromtimestamp(bar['t']/1000)
-        if t.hour >= 16:
-            post_vol += bar['v']
-            post_prices.append(bar['c'])
-    # Pre-market today
-    for bar in data_pre.get('results', []):
-        t = datetime.fromtimestamp(bar['t']/1000)
-        if t.hour < 9 or (t.hour==9 and t.minute<30):
-            pre_vol += bar['v']
-            pre_prices.append(bar['c'])
+    for c in dy.get("results", []):
+        tm = datetime.fromtimestamp(c["t"] / 1000)
+        if tm.hour >= 16:
+            post_v += c["v"]
+            post_times.append(tm)
+            post_prices.append(c["c"])
+    for c in dt.get("results", []):
+        tm = datetime.fromtimestamp(c["t"] / 1000)
+        if tm.hour < 9 or (tm.hour == 9 and tm.minute < 30):
+            pre_v += c["v"]
+            pre_times.append(tm)
+            pre_prices.append(c["c"])
 
-    return ticker, post_vol+pre_vol, pre_prices[0] if pre_prices else None, post_prices[-1] if post_prices else None
+    return (
+        ticker,
+        pre_v + post_v,
+        pre_times[0] if pre_times else None,
+        pre_times[-1] if pre_times else None,
+        post_times[0] if post_times else None,
+        post_times[-1] if post_times else None,
+        pre_prices[0] if pre_prices else None,
+        post_prices[-1] if post_prices else None,
+    )
 
+# ——— MAIN ASYNC WORKFLOW ———
 async def main_async():
-    async with aiohttp.ClientSession() as session:
-        metadata = await get_grouped_data_with_metadata(session)
-        tickers = list(metadata.keys())
+    async with aiohttp.ClientSession() as s:
+        md = await get_grouped_data_with_metadata(s)
+        tickers = list(md.keys())
 
-        # Filter by 21-day avg volume
-        vols = await asyncio.gather(*[fetch_21d_avg_volume(session,t) for t in tickers])
-        vol_map = {t:v for t,v in vols if v is not None}
+        # 21-day volume filter
+        vols = await asyncio.gather(*(fetch_21d_avg_volume(s, t) for t in tickers))
+        volume_map = {t: v for t, v in vols if t}
 
-        # Fetch OOH volume and price
-        ooh = await asyncio.gather(*[fetch_ooh_volume(session,t) for t in vol_map])
-
+        # OOH volume and price breakout filter
+        oohs = await asyncio.gather(*(fetch_ooh_volume(s, t) for t in volume_map))
         results = []
-        for ticker, tot_vol, pre_price, post_price in ooh:
-            avg = vol_map.get(ticker,0)
-            if pre_price is None or post_price is None:
-                continue
-            # Price change vs yesterday's close
-            last_close = metadata[ticker]['close']
-            pct = (pre_price - last_close)/last_close*100
-            oor = tot_vol/avg if avg else 0
-            if pct>OOH_PRICE_THRESHOLD and oor>OORVOL_THRESHOLD:
-                results.append({
-                    'Ticker':ticker,
-                    'OOH % Change':round(pct,2),
-                    'OORVOL':round(oor,2),
-                    '21D Avg Volume':int(avg),
-                    'OOH Volume':int(tot_vol),
-                    'Last Close':last_close,
-                    'Daily % Change':metadata[ticker]['pct_change']
-                })
-        df=pd.DataFrame(results)
-        df.sort_values('OORVOL',ascending=False,inplace=True)
-        return df
+        for t, avg in volume_map.items():
+            # find matching tuple
+            rec = next(x for x in oohs if x[0] == t)
+            _, ooh_vol, pre_start, pre_end, post_start, post_end, pre_price, post_price = rec
 
-# Run and display
-with st.spinner("Running scan... this may take 1–2 minutes"):
+            if not pre_price or not post_price: 
+                continue
+
+            oorvol = ooh_vol / avg if avg else 0
+            ooh_pct = (pre_price - md[t]["prev_close"]) / md[t]["prev_close"] * 100
+
+            if oorvol > OORVOL_THRESHOLD and ooh_pct > 2:
+                results.append({
+                    "Ticker": t,
+                    "21D Avg Volume": int(avg),
+                    "OOH Volume": int(ooh_vol),
+                    "OORVOL": round(oorvol, 2),
+                    "OOH % Change": round(ooh_pct, 2),
+                    "Last Close": md[t]["prev_close"],
+                    "Daily % Change": md[t]["pct_change"],
+                    "Pre Start": pre_start,
+                    "Pre End": pre_end,
+                    "Post Start": post_start,
+                    "Post End": post_end,
+                })
+
+        return pd.DataFrame(results).sort_values("OORVOL", ascending=False)
+
+# ——— RUN & DISPLAY ———
+with st.spinner("Running scan... this may take a minute"):
     df = asyncio.run(main_async())
 
 if not df.empty:
