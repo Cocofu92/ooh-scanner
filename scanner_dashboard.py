@@ -185,6 +185,3 @@ if not df.empty:
     st.dataframe(df, use_container_width=True)
 else:
     st.warning("⚠️ No qualifying stocks met the criteria today.")
-
-# Show last updated time
-st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
