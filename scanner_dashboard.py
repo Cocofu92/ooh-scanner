@@ -24,9 +24,9 @@ TWO_DAYS_AGO = (datetime.today() - timedelta(days=2)).strftime('%Y-%m-%d')
 START_DATE = (datetime.today() - timedelta(days=30)).strftime('%Y-%m-%d')
 
 @st.cache_data(ttl=REFRESH_MINUTES * 60)
-async def fetch(session, url):
+async def fetch(_session, url):
     try:
-        async with session.get(url, timeout=10) as response:
+        async with _session.get(url, timeout=10) as response:
             return await response.json()
     except Exception as e:
         st.error(f"Request error: {e}")
