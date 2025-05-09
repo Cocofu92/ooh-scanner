@@ -116,7 +116,7 @@ async def fetch_ooh_volume(session, ticker):
 async def main_async():
     async with aiohttp.ClientSession() as session:
         metadata_map = await get_grouped_data_with_metadata(session)
-        tickers = list(metadata_map.keys())
+        tickers = ["AAPL", "TSLA", "NVDA", "AMD", "GOOG"]  # Debug: limit to known symbols
 
         tasks_volume = [fetch_21d_avg_volume(session, t) for t in tickers]
         volume_results = await asyncio.gather(*tasks_volume)
@@ -193,13 +193,4 @@ else:
 # Show timestamp
 st.caption(f"Last updated: {now.strftime('%Y-%m-%d %H:%M:%S')}")
 
-# Auto-refresh using session state
-if "last_refresh" not in st.session_state:
-    st.session_state.last_refresh = now
-
-elapsed = (now - st.session_state.last_refresh).total_seconds()
-
-# TEMPORARILY DISABLED for debugging:
-# if elapsed > REFRESH_MINUTES * 60:
-#     st.session_state.last_refresh = now
-#     st.experimental_rerun()
+# Auto-refresh temporarily disabled for debugging
